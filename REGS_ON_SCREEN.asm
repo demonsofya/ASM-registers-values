@@ -26,59 +26,146 @@ Start:          int 09h
 
                 mov ax, 3100h       ; end + save memory
                 mov dx, offset ProgramEndPoint
-                shr dx, 4           ; ןמעמלף קעמ םאל םאהמ ןאלÿעü גûהוכÿעü א םו ןאנאדנאפû
+                shl dx, 4           ; ןמעמלף קעמ םאל םאהמ ןאלÿעü גûהוכÿעü א םו ןאנאדנאפû
 
                 inc dx
                 int 21h
 
 
+
+
+;------------------------
+;
+;
+;------------------------
 NewKeyboardInterrupt proc
+        push sp
         push ax
         push bx
         push es 
+        push dx
 
         xor ax, ax
         mov ah, 12h
         int 16h                 ; getting in ax info about shift/ctrl/alt/...
         
         in al, 60h              ; reading symbol from keyboard (for our ctrl+shift combination used only ah)
-        cmp ax, 011fh           ; clt + left shift - 0100h | s - 1fh
+        cmp ax, 011fh           ; clt - 0100h | s - 1fh
         jne JumpOldInterrupt
 
-        mov ax, 0b800h
-        mov es, ax
-        mov bx, 160d * 10 + 80d ; screen center
-        
-        push 6789h
-        call RegValueToHex
+        pop ax
+
+        push ax
+
+        call PrintRegisters
     
     JumpOldInterrupt:
-        xor bx, bx
 
+        pop dx
         pop es
         pop bx
         pop ax
+        pop sp
 
         db 0eah
         OldInterruptOffset dw 0
         OldInterruptSegment dw 0
         
         iret
+;--------------------------
+
+;--------------------------
+PrintRegisters proc
+        ;push sp
+        ;push ip 
+        ;push cs 
+        ;push ss 
+        ;push es
+        ;push ds 
+        push bp
+        push di
+        push si 
+        push dx
+        push cx
+        push bx 
+        push ax
+
+        mov ax, 0b800h
+        mov es, ax
+        mov bx, 160d * 10 + 80d ; screen center
+        
+        mov dx, 6178h                   ; "ax"
+        call PrintRegNameFromMemory
+
+        mov dx, 6278h                   ; "bx"
+        call PrintRegNameFromMemory
+
+        mov dx, 6378h                   ; "cx"
+        call PrintRegNameFromMemory
+
+        mov dx, 6478h                   ; "dx"
+        call PrintRegNameFromMemory
+
+        mov dx, 7369h                   ; "si"
+        call PrintRegNameFromMemory
+
+        mov dx, 6469h                   ; "di"
+        call PrintRegNameFromMemory
+
+        mov dx, 6270h                   ; "bp"
+        call PrintRegNameFromMemory
+
+        ret
+;--------------------------
+
+;--------------------------
+;dx - symbols
+;
+;--------------------------
+PrintRegNameFromMemory proc
+        mov es:[bx], dh       
+        mov es:[bx+1], reg_back_color
+        add bx, 2
+
+        mov es:[bx], dl       
+        mov es:[bx+1], reg_back_color
+        add bx, 2
+        
+        call RegValueToHex
+
+        sub bx, 4
+        add bx, 160d
+
+        ret 2d
+;--------------------------
+
+
 
 ;--------------------------
 ;1sr arg - value to turn to hex
 ;es:[bx] - where to print value
-;
+;save everything
+;-------------------------
 RegValueToHex proc
         push bp
         mov bp, sp
 
-        push ax
         push bx
-        push cx
-        push dx
 
-        mov ax, ss:[bp + 4]     ; value to turn to hex
+    PrintSpaceAndRavno:
+        mov es:[bx], 20h        ; space
+        mov es:[bx+1], reg_back_color
+        add bx, 2
+
+        mov es:[bx], 3dh        ; =
+        mov es:[bx+1], reg_back_color
+        add bx, 2
+
+        mov es:[bx], 20h        ; space
+        mov es:[bx+1], reg_back_color
+        add bx, 2
+
+        mov ax, ss:[bp + 8]     ; value to turn to hex
         
         mov ch, ah
         shr ch, 4               ; ch = ax % 16^3
@@ -100,21 +187,23 @@ RegValueToHex proc
         mov dl, al
         call NumToOneHex
 
-        pop dx
-        pop cx
         pop bx
-        pop ax
 
         pop bp
-        ret 2d
+        ret
+;--------------------------
+
+
 
 ;--------------------------
+;Printing one value from stack as hex num (as one hex num)
 ;dl - from 0 to 15
 ;es:[bx] where to print
 ;bx += 2
 ;Destroy: dl, bx += 2
+;---------------------------
 NumToOneHex proc
-        cmp dl, 10
+        cmp dl, 9d
         jg letter_hex_num
 
         add dl, 48d
@@ -130,6 +219,7 @@ NumToOneHex proc
         add bx, 2
         ret
 ;--------------------------
+
 
 ProgramEndPoint:
 
