@@ -1,8 +1,16 @@
+; на таймере сохраняем рамку -> копируем в draw buffer -> сравниваем с save - до обновления рамочки 
+; сравниваем всегда до обновления рамки - ловим что кто-то засрал между прерываниями
+
 .model tiny
 .code
 org 100h
 
 reg_back_color equ 4eh
+
+screen_width equ 160d
+
+ramka_x_cord equ 10d 
+ramka_y_cord equ 2d
 
 Start:          int 09h
 
@@ -26,7 +34,7 @@ Start:          int 09h
 
                 mov ax, 3100h       ; end + save memory
                 mov dx, offset ProgramEndPoint
-                shl dx, 4           ; потому что нам надо память выделять а не параграфы
+                shr dx, 4           ; потому что нам надо память выделять а не параграфы
 
                 inc dx
                 int 21h
@@ -39,11 +47,16 @@ Start:          int 09h
 ;
 ;------------------------
 NewKeyboardInterrupt proc
+        push bp
+        mov bp, sp
+
         push sp
         push ax
         push bx
         push es 
         push dx
+        push bp
+        push cx
 
         xor ax, ax
         mov ah, 12h
@@ -53,19 +66,26 @@ NewKeyboardInterrupt proc
         cmp ax, 011fh           ; clt - 0100h | s - 1fh
         jne JumpOldInterrupt
 
-        pop ax
+        mov bx, ss:[bp + 4]     ; ip value
 
+        pop ax
         push ax
 
         call PrintRegisters
+        mov ax, 0b800h
+        mov es, ax
+        call DrawRectangleRamka
     
     JumpOldInterrupt:
-
+        pop cx
+        pop bp
         pop dx
         pop es
         pop bx
         pop ax
         pop sp
+
+        pop bp
 
         db 0eah
         OldInterruptOffset dw 0
@@ -76,12 +96,12 @@ NewKeyboardInterrupt proc
 
 ;--------------------------
 PrintRegisters proc
-        ;push sp
-        ;push ip 
-        ;push cs 
-        ;push ss 
-        ;push es
-        ;push ds 
+        push sp
+        push bx         ; ip 
+        push cs 
+        push ss 
+        push es
+        push ds 
         push bp
         push di
         push si 
@@ -90,12 +110,26 @@ PrintRegisters proc
         push bx 
         push ax
 
+        mov bp, sp
+
         mov ax, 0b800h
         mov es, ax
-        mov bx, 160d * 10 + 80d ; screen center
-        
-        mov dx, 6178h                   ; "ax"
+        mov bx, ramka_y_cord * screen_width + ramka_x_cord ; screen center
+
+        mov cx, 13d                      ; registers count
+
+        lea di, reg_names
+print_one_reg:
+        mov dx, cs:[di]
+        xchg dl, dh                     ; little endian
         call PrintRegNameFromMemory
+        add di, 2
+        loop print_one_reg
+
+        ret
+        
+        mov dx, 6178h                   ; "ax" ||| di = offset ax_name -> mov es:[bx], [di] <- ne rabotaet nihuya otomy chto dosbox huyna
+        call PrintRegNameFromMemory     ;                                                                               ne uveren.
 
         mov dx, 6278h                   ; "bx"
         call PrintRegNameFromMemory
@@ -118,6 +152,7 @@ PrintRegisters proc
         ret
 ;--------------------------
 
+
 ;--------------------------
 ;dx - symbols
 ;
@@ -134,7 +169,7 @@ PrintRegNameFromMemory proc
         call RegValueToHex
 
         sub bx, 4
-        add bx, 160d
+        add bx, screen_width
 
         ret 2d
 ;--------------------------
@@ -147,10 +182,8 @@ PrintRegNameFromMemory proc
 ;save everything
 ;-------------------------
 RegValueToHex proc
-        push bp
-        mov bp, sp
-
         push bx
+        push cx
 
     PrintSpaceAndRavno:
         mov es:[bx], 20h        ; space
@@ -165,7 +198,7 @@ RegValueToHex proc
         mov es:[bx+1], reg_back_color
         add bx, 2
 
-        mov ax, ss:[bp + 8]     ; value to turn to hex
+        mov ax, ss:[bp + 2]     ; value to turn to hex
         
         mov ch, ah
         shr ch, 4               ; ch = ax % 16^3
@@ -187,9 +220,10 @@ RegValueToHex proc
         mov dl, al
         call NumToOneHex
 
+        pop cx
         pop bx
+        add bp, 2
 
-        pop bp
         ret
 ;--------------------------
 
@@ -220,6 +254,113 @@ NumToOneHex proc
         ret
 ;--------------------------
 
+
+
+;--------------------------
+;draw ramka ah (symbol = 00) color cx width and si high
+; function that exsists only for next task
+;Expect:   es = 0b800h
+;destroy:  di, si, dx,
+;save:     bx, ax, cx
+;Return:   nothing
+;--------------------------
+DrawRectangleRamka proc
+        push ax
+        push bx
+
+        xor di, di
+
+        mov cx, 13d
+        mov si, 17d
+
+    ; counting ramka position
+        xchg ax, di     ;---- saving to mul
+        xor ax, ax
+        add ax, screen_width * ramka_y_cord - screen_width - 2; center of 2nd string
+        sub ax, cx      ; center of str
+        and ax, not 1       ; making num even, cause colors and symbols will change in opposite
+        xchg ax, di     ;di - correct address
+
+        xor al, al      ; no symbol
+        mov dx, cx      ; saving cx
+
+;first string
+        rep stosw       ; printing first empty string
+        mov cx, dx
+        sub di, dx
+        sub di, dx
+        add di, screen_width
+
+        stosw           ; printing second string with tacing
+        mov al, 201d    ; угловой символ 
+        stosw
+        mov cx, dx
+        sub cx, 4
+        mov al, 205d    ; прямой символ типо =
+        rep stosw
+        mov al, 187d    ; угловой символ
+        stosw
+        xor al, al
+        stosw
+
+        sub dx, 4       ; going on next string
+        mov cx, dx
+        sub di, dx
+        sub di, dx
+        sub di, 8
+        add di, screen_width
+
+draw_all_strings:
+        stosw           ; first empty symbol
+        mov al, 186d    ; вертикальная окантовка
+        stosw
+        xor al, al
+        rep stosw       ; остальные пустые символы
+        mov al, 186d    ; вертикальная окантовка 
+        stosw
+        xor al, al
+        stosw
+
+        mov cx, dx      
+        sub di, dx
+        sub di, dx
+        sub di, 8
+        add di, screen_width    
+        dec si
+        cmp si, 0
+        jg draw_all_strings 
+
+;last string
+        xor al, al
+        stosw
+        mov al, 200d    ; угловой символ
+        stosw
+        mov cx, dx
+        mov al, 205d    ; прямой горизонтальный символ
+        rep stosw
+        mov al, 188d    ; угловой символ
+        stosw
+        xor al, al
+        stosw
+        sub di, dx
+        sub di, dx
+        sub di, 8
+        add di, screen_width
+
+        mov cx, dx
+        add cx, 4
+        xor al, al
+        rep stosw
+
+        pop bx
+        pop ax
+
+        ret
+;--------------------------
+
+
+
+reg_names db "axbxcxdxsibibpdsessscsipsp"
 
 ProgramEndPoint:
 
