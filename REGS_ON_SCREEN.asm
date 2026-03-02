@@ -10,7 +10,7 @@ reg_back_color equ 4eh
 screen_width equ 160d
 
 ramka_x_cord equ 10d 
-ramka_y_cord equ 2d
+ramka_y_cord equ 2
 
 Start:          int 09h
 
@@ -50,13 +50,14 @@ NewKeyboardInterrupt proc
         push bp
         mov bp, sp
 
-        push sp
-        push ax
+	;saving registers that would ba changed
         push bx
         push es 
+        push di 
+        push si
         push dx
-        push bp
-        push cx
+        push cx                                 
+        push ax
 
         xor ax, ax
         mov ah, 12h
@@ -66,43 +67,16 @@ NewKeyboardInterrupt proc
         cmp ax, 011fh           ; clt - 0100h | s - 1fh
         jne JumpOldInterrupt
 
-        mov bx, ss:[bp + 4]     ; ip value
-
-        pop ax
+        pop ax                  ; real ax value
         push ax
 
-        call PrintRegisters
-        mov ax, 0b800h
-        mov es, ax
-        call DrawRectangleRamka
-    
-    JumpOldInterrupt:
-        pop cx
-        pop bp
-        pop dx
-        pop es
-        pop bx
-        pop ax
-        pop sp
-
-        pop bp
-
-        db 0eah
-        OldInterruptOffset dw 0
-        OldInterruptSegment dw 0
-        
-        iret
-;--------------------------
-
-;--------------------------
-PrintRegisters proc
-        push sp
-        push bx         ; ip 
+        push ss:[bp + 6]         ; ip value 
         push cs 
         push ss 
         push es
         push ds 
-        push bp
+        push bp                 ; sp value
+        push ss:[bp + 2]        ; bp value 
         push di
         push si 
         push dx
@@ -110,47 +84,46 @@ PrintRegisters proc
         push bx 
         push ax
 
-        mov bp, sp
-
         mov ax, 0b800h
         mov es, ax
-        mov bx, ramka_y_cord * screen_width + ramka_x_cord ; screen center
+        call DrawRectangleRamka
 
-        mov cx, 13d                      ; registers count
+	;printing regs
+        mov bx, ramka_y_cord * screen_width + ramka_x_cord      ; regs start cord
+        mov cx, 13d                                             ; registers count
 
-        lea di, reg_names
-print_one_reg:
+        lea di, reg_names               ; regs offset
+        mov bp, sp
+
+    print_one_reg:
         mov dx, cs:[di]
         xchg dl, dh                     ; little endian
         call PrintRegNameFromMemory
         add di, 2
         loop print_one_reg
+    
+        add sp, 26d                     ; right sp value
 
-        ret
+    JumpOldInterrupt:
+	;repair regs values
+        pop ax                                  
+        pop cx
+        pop dx
+        pop si
+        pop di 
+        pop es
+        pop bx
+
+        pop bp
+
+	;jumping on old 09 interrupt
+        db 0eah
+        OldInterruptOffset dw 0
+        OldInterruptSegment dw 0
         
-        mov dx, 6178h                   ; "ax" ||| di = offset ax_name -> mov es:[bx], [di] <- ne rabotaet nihuya otomy chto dosbox huyna
-        call PrintRegNameFromMemory     ;                                                                               ne uveren.
-
-        mov dx, 6278h                   ; "bx"
-        call PrintRegNameFromMemory
-
-        mov dx, 6378h                   ; "cx"
-        call PrintRegNameFromMemory
-
-        mov dx, 6478h                   ; "dx"
-        call PrintRegNameFromMemory
-
-        mov dx, 7369h                   ; "si"
-        call PrintRegNameFromMemory
-
-        mov dx, 6469h                   ; "di"
-        call PrintRegNameFromMemory
-
-        mov dx, 6270h                   ; "bp"
-        call PrintRegNameFromMemory
-
-        ret
+        iret
 ;--------------------------
+
 
 
 ;--------------------------
@@ -171,7 +144,7 @@ PrintRegNameFromMemory proc
         sub bx, 4
         add bx, screen_width
 
-        ret 2d
+        ret 
 ;--------------------------
 
 
@@ -198,7 +171,7 @@ RegValueToHex proc
         mov es:[bx+1], reg_back_color
         add bx, 2
 
-        mov ax, ss:[bp + 2]     ; value to turn to hex
+        mov ax, ss:[bp]     ; value to turn to hex
         
         mov ch, ah
         shr ch, 4               ; ch = ax % 16^3
@@ -260,28 +233,19 @@ NumToOneHex proc
 ;draw ramka ah (symbol = 00) color cx width and si high
 ; function that exsists only for next task
 ;Expect:   es = 0b800h
-;destroy:  di, si, dx,
-;save:     bx, ax, cx
+;destroy:  di, si, dx, bx, ax, cx
+;save:     nothing
 ;Return:   nothing
 ;--------------------------
 DrawRectangleRamka proc
-        push ax
-        push bx
-
-        xor di, di
-
-        mov cx, 13d
-        mov si, 17d
+        mov cx, 15d
+        mov si, 13d
 
     ; counting ramka position
-        xchg ax, di     ;---- saving to mul
-        xor ax, ax
-        add ax, screen_width * ramka_y_cord - screen_width - 2; center of 2nd string
-        sub ax, cx      ; center of str
-        and ax, not 1       ; making num even, cause colors and symbols will change in opposite
-        xchg ax, di     ;di - correct address
+        mov di, screen_width * (ramka_y_cord - 2) + ramka_x_cord - 6; center of 2nd string
 
         xor al, al      ; no symbol
+        mov ah, reg_back_color
         mov dx, cx      ; saving cx
 
 ;first string
@@ -352,15 +316,12 @@ draw_all_strings:
         xor al, al
         rep stosw
 
-        pop bx
-        pop ax
-
         ret
 ;--------------------------
 
 
 
-reg_names db "axbxcxdxsibibpdsessscsipsp"
+reg_names db "axbxcxdxsidibpspdsessscsip"
 
 ProgramEndPoint:
 
