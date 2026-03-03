@@ -5,58 +5,76 @@
 .code
 org 100h
 
-reg_back_color equ 4eh
+PRINT_DL_VAL_END_COLOR macro 
+        mov es:[bx], dl       
+        mov es:[bx+1], REG_BACK_COLOR
+        add bx, 2
+        endm
 
-screen_width equ 160d
+REG_BACK_COLOR equ 4eh
 
-ramka_x_cord equ 10d 
-ramka_y_cord equ 2
+SCREEN_WIDTH equ 160d
 
-Start:          int 09h
+RAMKA_X_CORD equ 10d 
+RAMKA_Y_CORD equ 2
 
-                mov ax, 3509h
-                int 21h
-                mov OldInterruptOffset, bx
-                mov OldInterruptSegment, es
+REGS_COUNT equ 13d
+RAMKA_WIDTH equ 15d
 
-                xor ax, ax
-                mov es, ax          ; es - interruptions
+Start:      ;changing keyboard interrupt
+        mov ax, 3509h
+        int 21h
+        mov OldKeyboardInterruptOffset, bx
+        mov OldKeyboardInterruptSegment, es
 
-                mov bx, 4 * 09h     ; - 9th interruption 
-                cli                 ; stop interrupting 
-                mov es:[bx], offset NewKeyboardInterrupt
+        xor ax, ax
+        mov es, ax          ; es - interruptions
 
-                mov ax, cs          ;  current code segment
-                mov es:[bx + 2], ax ; потому что ебучий литл ендиан
-                sti                 ; continue interrupting 
+        mov bx, 4 * 09h     ; - 9th interruption 
+        cli                 ; stop interrupting 
+        mov es:[bx], offset NewKeyboardInterrupt
 
-                int 09h
+        mov ax, cs          ;  current code segment
+        mov es:[bx + 2], ax ; потому что ебучий литл ендиан
+        sti                 ; continue interrupting 
 
-                mov ax, 3100h       ; end + save memory
-                mov dx, offset ProgramEndPoint
-                shr dx, 4           ; потому что нам надо память выделять а не параграфы
 
-                inc dx
-                int 21h
+    ;changing timer interrupt
+        mov ax, 3508h
+        int 21h
+        mov OldTimerInterruptOffset, bx
+        mov OldTimerInterruptSegment, es
 
+        xor ax, ax
+        mov es, ax          ; es - interruptions
+
+        mov bx, 4 * 08h     ; - 8th interruption 
+        cli                 ; stop interrupting 
+        mov es:[bx], offset NewTimerInterrupt
+
+        mov ax, cs          ;  current code segment
+        mov es:[bx + 2], ax ; потому что ебучий литл ендиан
+        sti                 ; continue interrupting 
+
+    ;saving memory and end program
+        mov ax, 3100h       ; end + save memory
+        mov dx, offset ProgramEndPoint
+        shr dx, 4           ; потому что нам надо память выделять а не параграфы
+
+        inc dx
+        int 21h
 
 
 
 ;------------------------
-;
-;
+;New keyboard interrupt function
+;printing ramka with regs on screen if Ctrl + S
+;hide ramka on Ctrl + A
+;saving all
+;expect nothing
 ;------------------------
 NewKeyboardInterrupt proc
-        push bp
-        mov bp, sp
-
-	;saving registers that would ba changed
-        push bx
-        push es 
-        push di 
-        push si
-        push dx
-        push cx                                 
+	;saving ax old value                          
         push ax
 
         xor ax, ax
@@ -64,62 +82,42 @@ NewKeyboardInterrupt proc
         int 16h                 ; getting in ax info about shift/ctrl/alt/...
         
         in al, 60h              ; reading symbol from keyboard (for our ctrl+shift combination used only ah)
-        cmp ax, 011fh           ; clt - 0100h | s - 1fh
-        jne JumpOldInterrupt
+        cmp ax, 011fh           ; clt - 0100h | s - 1fh 
+        jne closing_ramka
 
-        pop ax                  ; real ax value
-        push ax
+        cmp [ramka_flag], 1h 
+        je jmp_old_keyboard_interrupt
 
-        push ss:[bp + 6]         ; ip value 
-        push cs 
-        push ss 
-        push es
-        push ds 
-        push bp                 ; sp value
-        push ss:[bp + 2]        ; bp value 
-        push di
-        push si 
-        push dx
-        push cx
-        push bx 
-        push ax
+		mov [ramka_flag], 1h    ; ramka is on
 
+        push es di ax bx cx dx
         mov ax, 0b800h
         mov es, ax
-        call DrawRectangleRamka
+        mov [saving_printing_buffer_flag], 0    ; 0 - saving ramka
+		call SavePrintBufferFunc
+        pop dx cx bx ax di es
 
-	;printing regs
-        mov bx, ramka_y_cord * screen_width + ramka_x_cord      ; regs start cord
-        mov cx, 13d                                             ; registers count
+		jmp jmp_old_keyboard_interrupt
 
-        lea di, reg_names               ; regs offset
-        mov bp, sp
+    closing_ramka:
+        cmp ax, 011eh           ; clt - 0100h | a - 1eh
+		jne jmp_old_keyboard_interrupt
 
-    print_one_reg:
-        mov dx, cs:[di]
-        xchg dl, dh                     ; little endian
-        call PrintRegNameFromMemory
-        add di, 2
-        loop print_one_reg
-    
-        add sp, 26d                     ; right sp value
+		mov [ramka_flag], 0h    ; ramka is off
 
-    JumpOldInterrupt:
-	;repair regs values
-        pop ax                                  
-        pop cx
-        pop dx
-        pop si
-        pop di 
-        pop es
-        pop bx
+        push es di ax bx cx dx  ; saving regs
+		mov ax, 0b800h
+        mov es, ax
+		mov [saving_printing_buffer_flag], 1    ; 1 - printing ramka
+		call SavePrintBufferFunc
+        pop dx cx bx ax di es
 
-        pop bp
-
+	jmp_old_keyboard_interrupt:
+        pop ax
 	;jumping on old 09 interrupt
         db 0eah
-        OldInterruptOffset dw 0
-        OldInterruptSegment dw 0
+        OldKeyboardInterruptOffset dw 0
+        OldKeyboardInterruptSegment dw 0
         
         iret
 ;--------------------------
@@ -127,22 +125,32 @@ NewKeyboardInterrupt proc
 
 
 ;--------------------------
-;dx - symbols
-;
+;expect: es = 0b800h  | last 13 positions in stack are regs
+;printing REGS_COUNT regs from memory started with dp position
 ;--------------------------
 PrintRegNameFromMemory proc
-        mov es:[bx], dh       
-        mov es:[bx+1], reg_back_color
-        add bx, 2
+	;printing regs
+        mov bx, RAMKA_Y_CORD * SCREEN_WIDTH + RAMKA_X_CORD      ; regs start cord
+        mov cx, REGS_COUNT                                      ; registers count
 
-        mov es:[bx], dl       
-        mov es:[bx+1], reg_back_color
-        add bx, 2
+        lea di, reg_names                                       ; regs offset
+
+    print_one_reg:
+        mov dx, cs:[di]
+
+	;print one reg from memory      
+        PRINT_DL_VAL_END_COLOR
+
+        xchg dl, dh            
+        PRINT_DL_VAL_END_COLOR
         
         call RegValueToHex
 
         sub bx, 4
-        add bx, screen_width
+        add bx, SCREEN_WIDTH
+
+        add di, 2
+        loop print_one_reg
 
         ret 
 ;--------------------------
@@ -158,20 +166,16 @@ RegValueToHex proc
         push bx
         push cx
 
-    PrintSpaceAndRavno:
-        mov es:[bx], 20h        ; space
-        mov es:[bx+1], reg_back_color
-        add bx, 2
+        mov dl, ' '        ; space                     ; ПОМЕНЯЙ 20h НА ' ' !!!!!
+        PRINT_DL_VAL_END_COLOR
 
-        mov es:[bx], 3dh        ; =
-        mov es:[bx+1], reg_back_color
-        add bx, 2
+        mov dl, '='        ; =                          ; ТОЖЕ
+        PRINT_DL_VAL_END_COLOR
 
-        mov es:[bx], 20h        ; space
-        mov es:[bx+1], reg_back_color
-        add bx, 2
+        mov dl, ' '        ; space                     ; ТОЖЕ
+        PRINT_DL_VAL_END_COLOR
 
-        mov ax, ss:[bp]     ; value to turn to hex
+        mov ax, ss:[bp]     	; value to turn to hex
         
         mov ch, ah
         shr ch, 4               ; ch = ax % 16^3
@@ -195,7 +199,7 @@ RegValueToHex proc
 
         pop cx
         pop bx
-        add bp, 2
+        add bp, 2                   ; ПОДПИШИ, 2 ЧЕГО - d ИЛИ h. ПРОСЛЕДИ ЗА ЭТИМ ВЕЗДЕ, ГДЕ ЕСТЬ ЦИФРЫ
 
         ret
 ;--------------------------
@@ -213,117 +217,217 @@ NumToOneHex proc
         cmp dl, 9d
         jg letter_hex_num
 
-        add dl, 48d
-        jmp print_one_hex_num
+        add dl, '0'                                 ; if it is 0-9
+        jmp print_one_hex_num                       
 
     letter_hex_num:
-        add dl, 87
+        add dl, 'a' - 10                                 ; 87 = 'a' - 10                     
         
-    print_one_hex_num:
-        mov es:[bx], dl
-        mov es:[bx+1], reg_back_color
+    print_one_hex_num:                              ; У ТЕБЯ УЖЕ 4 РАЗ ВСТРЕЧАЕТСЯ ТАКИЕ 3 СТРОЧКИ НИЖЕ (3 РАЗА ВСТРЕЧАЛИСЬ В ПРЕДЫДУЩЕЙ ПРОЦЕДУРЕ).
+        PRINT_DL_VAL_END_COLOR
 
-        add bx, 2
         ret
 ;--------------------------
 
 
-
+; НИХУЯ НЕ ЯСНО, ЧЕ ТАКОЕ ah. ВТОРУЮ СТРОЧКУ КОММЕНТА МОЖНО И УБРАТЬ
 ;--------------------------
-;draw ramka ah (symbol = 00) color cx width and si high
-; function that exsists only for next task
+;draw ramka REG_BACK_COLOR color RAMKA_WIDTH width and REGS_COUNT high
 ;Expect:   es = 0b800h
 ;destroy:  di, si, dx, bx, ax, cx
 ;save:     nothing
 ;Return:   nothing
 ;--------------------------
 DrawRectangleRamka proc
-        mov cx, 15d
-        mov si, 13d
+        mov cx, RAMKA_WIDTH		; reg string width
+        mov si, REGS_COUNT      ; ramka height = regs count
 
     ; counting ramka position
-        mov di, screen_width * (ramka_y_cord - 2) + ramka_x_cord - 6; center of 2nd string
+        mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate 
 
         xor al, al      ; no symbol
-        mov ah, reg_back_color
-        mov dx, cx      ; saving cx
+        mov ah, REG_BACK_COLOR
 
-;first string
+	;first two strings
         rep stosw       ; printing first empty string
-        mov cx, dx
-        sub di, dx
-        sub di, dx
-        add di, screen_width
+        add di, SCREEN_WIDTH - RAMKA_WIDTH * 2
 
-        stosw           ; printing second string with tacing
-        mov al, 201d    ; угловой символ 
-        stosw
-        mov cx, dx
-        sub cx, 4
-        mov al, 205d    ; прямой символ типо =
-        rep stosw
-        mov al, 187d    ; угловой символ
-        stosw
-        xor al, al
-        stosw
+        mov dx, 0c9bbh  ; c9 - верхний левый угловой символ, bb - правый верхний угловой символ
+        mov ch, 205d    ; прямой символ похожий на '='
+        call PrintOneRamkaString    ; printing second string
 
-        sub dx, 4       ; going on next string
-        mov cx, dx
-        sub di, dx
-        sub di, dx
-        sub di, 8
-        add di, screen_width
+    ; cycle for middle of ramka
+	draw_all_strings:
+        mov dx, 0babah  ; вертикальная окантовка в два полу-регистра сразу
+        mov ch, 0h
 
-draw_all_strings:
-        stosw           ; first empty symbol
-        mov al, 186d    ; вертикальная окантовка
-        stosw
-        xor al, al
-        rep stosw       ; остальные пустые символы
-        mov al, 186d    ; вертикальная окантовка 
-        stosw
-        xor al, al
-        stosw
+        call PrintOneRamkaString
 
-        mov cx, dx      
-        sub di, dx
-        sub di, dx
-        sub di, 8
-        add di, screen_width    
         dec si
         cmp si, 0
         jg draw_all_strings 
 
-;last string
-        xor al, al
-        stosw
-        mov al, 200d    ; угловой символ
-        stosw
-        mov cx, dx
-        mov al, 205d    ; прямой горизонтальный символ
-        rep stosw
-        mov al, 188d    ; угловой символ
-        stosw
-        xor al, al
-        stosw
-        sub di, dx
-        sub di, dx
-        sub di, 8
-        add di, screen_width
+	;last two strings
+        mov dx, 0c8bch  ; c8 - левый нижний угловой символ, bc - правый нижний угловой символ
+        mov ch, 205d    ; прямой символ типо '='
+        call PrintOneRamkaString    ; предпоследняя строка
 
-        mov cx, dx
-        add cx, 4
+        mov cx, RAMKA_WIDTH
         xor al, al
-        rep stosw
+        rep stosw       ; last string
 
         ret
 ;--------------------------
 
 
+;--------------------------
+;printing string with empty-1st-middle-2nd-empty style (stosw-stosw-rep stosw-stosw-stosw)
+;Expect: es:[di] - where to printout ramka
+;Entry: dh - left symbol ; dl - right symbol ; ch - middle symbol
+;Destroy: al cx di
+;Return: di - start position in new line
+;--------------------------
+PrintOneRamkaString proc
+        xor al, al
+        stosw           ; printing second string with tacing        ; СДЕЛАЙ ПРОЦЕДУРУ, КОТОРАЯ ВЫВОДИТ СТРОЧКУ. ИНАЧЕ ВЫГЛЯДИТ НЕАККУРАТНО (2 РАЗА НИЖЕ ВСТРЕЧАЕТСЯ ЭТОТ КОПИПАСТ!!!)
+        mov al, dh    ; угловой символ 
+        stosw
+        mov al, ch    ; прямой символ типо =
+        mov cx, RAMKA_WIDTH - 4
+        rep stosw
+        mov al, dl    ; угловой символ
+        stosw
+        xor al, al
+        stosw
 
-reg_names db "axbxcxdxsidibpspdsessscsip"
+        add di, SCREEN_WIDTH - RAMKA_WIDTH * 2
 
+        ret
+;--------------------------
+
+
+;--------------------------
+;New timer interrupt function
+;printing ramka if ramka_flag is 1, or just going to old interrupt
+;--------------------------
+NewTimerInterrupt proc
+		cmp [ramka_flag], 1
+		jne jump_old_timer_interrupt
+
+	;saving registers that would ba changed and pushing it to stack to printout
+		push sp                ; cs and ip already in stack  
+        push ss
+        push es
+        push ds 
+        push bp                 
+        push di
+        push si 
+        push dx
+        push cx
+        push bx 
+        push ax
+
+        mov ax, 0b800h
+        mov es, ax
+        call DrawRectangleRamka   ; ЗАЧЕМ ТЫ РИСУЕШЬ ЗДЕСЬ РАМКУ, ЕСЛИ ОНА У ТЕБЯ РИСУЕТСЯ ПО ТАЙМЕРУ? В ПРЕРЫВАНИИ КЛАВИАТУРЫ НАДО ТОЛЬКО СОХРАНЯТЬ БУФЕР
+
+		mov bp, sp
+        call PrintRegNameFromMemory
+    
+        pop ax
+        pop bx
+        pop cx
+        pop dx
+        pop si
+        pop di
+        pop bp
+        pop ds
+        pop es
+        pop ss
+        pop sp
+
+	jump_old_timer_interrupt:
+		db 0eah
+        OldTimerInterruptOffset dw 0
+        OldTimerInterruptSegment dw 0
+        
+        iret
+;--------------------------
+
+
+
+
+;--------------------------
+; If saving_printing_buffer_flag = 1, printing buffer to visual memory; or saving screen in buffer
+;Saving buffer from screen to save_buffer 
+;Print save_buffer on screen
+;Destroy: di ax bx cx dx
+;Save: nothing
+;Return: nothing
+;--------------------------
+SavePrintBufferFunc proc 
+		mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate        ; --->
+		lea bx, save_buffer                                                                            ; ---> КОПИПАСТА!!! 
+		mov dx, RAMKA_WIDTH + 2                                                                                    ; --->
+
+save_print_all_ramka:
+		mov cx, RAMKA_WIDTH
+        cmp [saving_printing_buffer_flag], 1
+        jne save_one_string 
+
+	print_one_string:
+    ;printing ramka
+		mov ax, cs:[bx]
+		mov es:[di], ax
+		add di, 2
+		add bx, 2
+		loop print_one_string 
+        
+        jmp end_one_string
+        
+    save_one_string:   
+    ;saving ramka                     ; ПОСЛЕДИ ЗА КОДСТАЙЛОМ: МЕТКИ ВСЕГДА ПРИДВИНУТЫ ВПРАВО, А КОД С ОТСТУПОВ В ОДИН ИЛИ ДВА tab'а
+		mov ax, es:[di]
+		mov cs:[bx], ax
+		add di, 2
+		add bx, 2
+		loop save_one_string                                           ; АЛООО!!!!!!! ЧЕ ЗА КОПИПАСТ НАХУЙ?!?! РАЗБЕЙ НА ПРОЦЕДУРЫ И ВЫЗЫВАЙ ИХ, А НЕ КОПИПАСТЬ
+
+    end_one_string:
+		sub di, RAMKA_WIDTH * 2                                          ; --->
+		add di, SCREEN_WIDTH                                             ; --->
+                                                                         ; ---> КОПИПАСТА!!!!!
+		sub dx, 1                                                        ; --->
+		cmp dx, 0                                                        ; --->
+		jg save_print_all_ramka
+
+		ret
+;--------------------------
+
+
+reg_names db "ax"
+          db "bx"
+          db "cx"
+          db "dx"
+          db "si"
+          db "di"
+          db "bp"
+          db "ds"
+          db "es"
+          db "ss"
+          db "sp"
+          db "ip"
+          db "cs"          ; СДЕЛАЙ db НА КАЖДОЙ СТРОЧКЕ - БУДЕТ ЧИТАЕМЕЕ
+
+ramka_flag dw 0                 ; is ramka on screen 
+
+saving_printing_buffer_flag dw 0    ; 0 - saving, 1 - printing
+
+save_buffer dw 500 dup(0)		; выделяем памяти на 17 строк по 15 символов - наша рамка
+                                ; ЭТО МЕНЬШЕ 500: 17 * 15 = 255
 ProgramEndPoint:
+
+
 
 end     Start
 
