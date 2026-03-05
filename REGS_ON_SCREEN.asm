@@ -90,12 +90,14 @@ NewKeyboardInterrupt proc
 
 		mov [ramka_flag], 1h    ; ramka is on
 
-        push es di ax bx cx dx
+        push es di si ax bx cx dx
         mov ax, 0b800h
         mov es, ax
         mov [saving_printing_buffer_flag], 0    ; 0 - saving ramka
-		call SavePrintBufferFunc
-        pop dx cx bx ax di es
+		call SaveOrPrintBufferFunc
+        mov [saving_printing_buffer_flag], 2
+        call SaveOrPrintBufferFunc
+        pop dx cx bx ax si di es
 
 		jmp jmp_old_keyboard_interrupt
 
@@ -105,12 +107,12 @@ NewKeyboardInterrupt proc
 
 		mov [ramka_flag], 0h    ; ramka is off
 
-        push es di ax bx cx dx  ; saving regs
+        push es di si ax bx cx dx  ; saving regs
 		mov ax, 0b800h
         mov es, ax
 		mov [saving_printing_buffer_flag], 1    ; 1 - printing ramka
-		call SavePrintBufferFunc
-        pop dx cx bx ax di es
+		call SaveOrPrintBufferFunc
+        pop dx cx bx ax si di es
 
 	jmp_old_keyboard_interrupt:
         pop ax
@@ -289,13 +291,13 @@ DrawRectangleRamka proc
 ;--------------------------
 PrintOneRamkaString proc
         xor al, al
-        stosw           ; printing second string with tacing        ; ÑÄÅËÀÉ ÏĞÎÖÅÄÓĞÓ, ÊÎÒÎĞÀß ÂÛÂÎÄÈÒ ÑÒĞÎ×ÊÓ. ÈÍÀ×Å ÂÛÃËßÄÈÒ ÍÅÀÊÊÓĞÀÒÍÎ (2 ĞÀÇÀ ÍÈÆÅ ÂÑÒĞÅ×ÀÅÒÑß İÒÎÒ ÊÎÏÈÏÀÑÒ!!!)
-        mov al, dh    ; óãëîâîé ñèìâîë 
+        stosw           ; printing second string with tacing   
+        mov al, dh      ; ëåâûé ñèìâîë
         stosw
-        mov al, ch    ; ïğÿìîé ñèìâîë òèïî =
+        mov al, ch      ; ñğåäíèé ñèìâîë
         mov cx, RAMKA_WIDTH - 4
         rep stosw
-        mov al, dl    ; óãëîâîé ñèìâîë
+        mov al, dl      ; ïğàâûé ñèìâîë
         stosw
         xor al, al
         stosw
@@ -329,10 +331,15 @@ NewTimerInterrupt proc
 
         mov ax, 0b800h
         mov es, ax
-        call DrawRectangleRamka   ; ÇÀ×ÅÌ ÒÛ ĞÈÑÓÅØÜ ÇÄÅÑÜ ĞÀÌÊÓ, ÅÑËÈ ÎÍÀ Ó ÒÅÁß ĞÈÑÓÅÒÑß ÏÎ ÒÀÉÌÅĞÓ? Â ÏĞÅĞÛÂÀÍÈÈ ÊËÀÂÈÀÒÓĞÛ ÍÀÄÎ ÒÎËÜÊÎ ÑÎÕĞÀÍßÒÜ ÁÓÔÅĞ
 
+        call CmpDrawBufferAndScreen ; ñğàâíèâàåì ğàìêè
+        call DrawRectangleRamka     ; ğèñóåì ğàìêó
+        
 		mov bp, sp
-        call PrintRegNameFromMemory
+        call PrintRegNameFromMemory ; âûâîäèì ğåãèñòğû
+
+		mov [saving_printing_buffer_flag], 2
+        call SaveOrPrintBufferFunc
     
         pop ax
         pop bx
@@ -365,15 +372,19 @@ NewTimerInterrupt proc
 ;Save: nothing
 ;Return: nothing
 ;--------------------------
-SavePrintBufferFunc proc 
-		mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate        ; --->
-		lea bx, save_buffer                                                                            ; ---> ÊÎÏÈÏÀÑÒÀ!!! 
-		mov dx, RAMKA_WIDTH + 2                                                                                    ; --->
+SaveOrPrintBufferFunc proc 
+		mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate       
+		lea bx, save_buffer    
+        lea si, draw_buffer 
+        mov dx, REGS_COUNT + 4  ; ramka height                                                                                     
 
 save_print_all_ramka:
 		mov cx, RAMKA_WIDTH
-        cmp [saving_printing_buffer_flag], 1
-        jne save_one_string 
+
+        cmp [saving_printing_buffer_flag], 0
+        je save_one_string 
+        cmp [saving_printing_buffer_flag], 2
+        je draw_one_string
 
 	print_one_string:
     ;printing ramka
@@ -382,27 +393,78 @@ save_print_all_ramka:
 		add di, 2
 		add bx, 2
 		loop print_one_string 
-        
+          
         jmp end_one_string
         
     save_one_string:   
-    ;saving ramka                     ; ÏÎÑËÅÄÈ ÇÀ ÊÎÄÑÒÀÉËÎÌ: ÌÅÒÊÈ ÂÑÅÃÄÀ ÏĞÈÄÂÈÍÓÒÛ ÂÏĞÀÂÎ, À ÊÎÄ Ñ ÎÒÑÒÓÏÎÂ Â ÎÄÈÍ ÈËÈ ÄÂÀ tab'à
+    ;saving ramka                     
 		mov ax, es:[di]
 		mov cs:[bx], ax
 		add di, 2
 		add bx, 2
-		loop save_one_string                                           ; ÀËÎÎÎ!!!!!!! ×Å ÇÀ ÊÎÏÈÏÀÑÒ ÍÀÕÓÉ?!?! ĞÀÇÁÅÉ ÍÀ ÏĞÎÖÅÄÓĞÛ È ÂÛÇÛÂÀÉ ÈÕ, À ÍÅ ÊÎÏÈÏÀÑÒÜ
+		loop save_one_string 
 
-    end_one_string:
-		sub di, RAMKA_WIDTH * 2                                          ; --->
-		add di, SCREEN_WIDTH                                             ; --->
-                                                                         ; ---> ÊÎÏÈÏÀÑÒÀ!!!!!
-		sub dx, 1                                                        ; --->
-		cmp dx, 0                                                        ; --->
+        jmp end_one_string 
+
+    draw_one_string:
+    ;moving screen to draw buffer  
+        mov ax, es:[di]
+		mov cs:[si], ax
+		add si, 2
+		add di, 2
+		loop draw_one_string    
+                                       
+    end_one_string:                                                              
+        add di, SCREEN_WIDTH - RAMKA_WIDTH * 2    
+		sub dx, 1                                                        
+		cmp dx, 0                                                        
 		jg save_print_all_ramka
 
 		ret
 ;--------------------------
+
+
+;--------------------------
+;Compare draw buffer and screen. If difference, print screen symbol in save & draw buffer
+;Destroy: di ax bx cx dx
+;Save: nothing
+;Return: nothing
+;--------------------------
+CmpDrawBufferAndScreen proc
+        mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate       
+		lea bx, draw_buffer 
+        lea si, save_buffer                                                                         
+		mov dx, REGS_COUNT + 4  ; ramka height  
+
+compare_string:
+        mov cx, RAMKA_WIDTH
+
+    compare_symbol:
+        mov ax, es:[di]
+        cmp ax, cs:[bx]
+        je go_to_next_symbol
+
+        mov cs:[bx], ax
+        mov cs:[si], ax
+
+    go_to_next_symbol:
+        add di, 2
+        add si, 2
+        add bx, 2
+
+        loop compare_symbol
+        
+        sub di, RAMKA_WIDTH * 2                                          
+		add di, SCREEN_WIDTH                                             
+                                                                         
+		sub dx, 1                                                        
+		cmp dx, 0                                                        
+		jg compare_string
+
+        ret
+;--------------------------
+
+
 
 
 reg_names db "ax"
@@ -417,14 +479,16 @@ reg_names db "ax"
           db "ss"
           db "sp"
           db "ip"
-          db "cs"          ; ÑÄÅËÀÉ db ÍÀ ÊÀÆÄÎÉ ÑÒĞÎ×ÊÅ - ÁÓÄÅÒ ×ÈÒÀÅÌÅÅ
+          db "cs"          
 
-ramka_flag dw 0                 ; is ramka on screen 
+ramka_flag dw 0                     ; is ramka on screen 
 
-saving_printing_buffer_flag dw 0    ; 0 - saving, 1 - printing
+saving_printing_buffer_flag dw 0    ; 0 - saving, 1 - printing, 2 - from screen to draw buffer
 
-save_buffer dw 500 dup(0)		; âûäåëÿåì ïàìÿòè íà 17 ñòğîê ïî 15 ñèìâîëîâ - íàøà ğàìêà
+save_buffer dw 600 dup(0)		; âûäåëÿåì ïàìÿòè íà 17 ñòğîê ïî 15 ñèìâîëîâ - íàøà ğàìêà
                                 ; İÒÎ ÌÅÍÜØÅ 500: 17 * 15 = 255
+draw_buffer dw 600 dup(0)
+
 ProgramEndPoint:
 
 
