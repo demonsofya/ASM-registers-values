@@ -5,13 +5,13 @@
 .code
 org 100h
 
-PRINT_DL_VAL_END_COLOR macro 
+PRINT_DL_VAL_AND_COLOR macro 
         mov es:[bx], dl       
         mov es:[bx+1], REG_BACK_COLOR
         add bx, 2
         endm
 
-REG_BACK_COLOR equ 4eh
+REG_BACK_COLOR equ 4eh  ; white on red
 
 SCREEN_WIDTH equ 160d
 
@@ -22,7 +22,7 @@ REGS_COUNT equ 13d
 RAMKA_WIDTH equ 15d
 
 Start:      ;changing keyboard interrupt
-        mov ax, 3509h
+        mov ax, 3509h       ; getting address of original keyboard interrupt
         int 21h
         mov OldKeyboardInterruptOffset, bx
         mov OldKeyboardInterruptSegment, es
@@ -35,12 +35,12 @@ Start:      ;changing keyboard interrupt
         mov es:[bx], offset NewKeyboardInterrupt
 
         mov ax, cs          ;  current code segment
-        mov es:[bx + 2], ax ; потому что ебучий литл ендиан
+        mov es:[bx + 2], ax ; потому что ****** литл ендиан
         sti                 ; continue interrupting 
 
 
     ;changing timer interrupt
-        mov ax, 3508h
+        mov ax, 3508h       ; getting address of original timer interrupt 
         int 21h
         mov OldTimerInterruptOffset, bx
         mov OldTimerInterruptSegment, es
@@ -68,10 +68,11 @@ Start:      ;changing keyboard interrupt
 
 ;------------------------
 ;New keyboard interrupt function
-;printing ramka with regs on screen if Ctrl + S
+;printing ramka with regs on screen on Ctrl + S
 ;hide ramka on Ctrl + A
-;saving all
-;expect nothing
+;saving: all
+;expect: nothing
+;return: nothing (returning is on old interrupt)
 ;------------------------
 NewKeyboardInterrupt proc
 	;saving ax old value                          
@@ -83,9 +84,9 @@ NewKeyboardInterrupt proc
         
         in al, 60h              ; reading symbol from keyboard (for our ctrl+shift combination used only ah)
         cmp ax, 011fh           ; clt - 0100h | s - 1fh 
-        jne closing_ramka
+        jne closing_ramka       ; if not, jumping to compare with ctrl + a
 
-        cmp [ramka_flag], 1h 
+        cmp [ramka_flag], 1h    ; checking if ramka is on
         je jmp_old_keyboard_interrupt
 
 		mov [ramka_flag], 1h    ; ramka is on
@@ -93,9 +94,9 @@ NewKeyboardInterrupt proc
         push es di si ax bx cx dx
         mov ax, 0b800h
         mov es, ax
-        mov [saving_printing_buffer_flag], 0    ; 0 - saving ramka
+        mov [saving_printing_buffer_flag], 0    ; 0 - saving screen to save_buffer
 		call SaveOrPrintBufferFunc
-        mov [saving_printing_buffer_flag], 2
+        mov [saving_printing_buffer_flag], 2    ; 2 - saving screen to draw_buffer
         call SaveOrPrintBufferFunc
         pop dx cx bx ax si di es
 
@@ -116,7 +117,7 @@ NewKeyboardInterrupt proc
 
 	jmp_old_keyboard_interrupt:
         pop ax
-	;jumping on old 09 interrupt
+	;jumping on old 08 interrupt
         db 0eah
         OldKeyboardInterruptOffset dw 0
         OldKeyboardInterruptSegment dw 0
@@ -138,20 +139,20 @@ PrintRegNameFromMemory proc
         lea di, reg_names                                       ; regs offset
 
     print_one_reg:
-        mov dx, cs:[di]
+        mov dx, cs:[di]                                         ; getting curr reg name
 
 	;print one reg from memory      
-        PRINT_DL_VAL_END_COLOR
+        PRINT_DL_VAL_AND_COLOR                                  ; print first reg name symbol
 
-        xchg dl, dh            
-        PRINT_DL_VAL_END_COLOR
+        xchg dl, dh                                             ; print next reg name symbol
+        PRINT_DL_VAL_AND_COLOR
         
-        call RegValueToHex
+        call RegValueToHex                                      ; printing reg value (first value from stack)
 
-        sub bx, 4
-        add bx, SCREEN_WIDTH
+        sub bx, 4d
+        add bx, SCREEN_WIDTH                                    ; going to next screen
 
-        add di, 2
+        add di, 2d                                              ; next position in string of reg names
         loop print_one_reg
 
         ret 
@@ -160,48 +161,52 @@ PrintRegNameFromMemory proc
 
 
 ;--------------------------
-;1sr arg - value to turn to hex
-;es:[bx] - where to print value
-;save everything
+; Printing value from stack in position bp on screen
+;Expect: es:[bx] - where to print value
+;Entry:  bp - position in stack where to search value
+;save: everything
+;return: bp += 2
+;destroy: dx ax bp
+;save: bx cx
 ;-------------------------
 RegValueToHex proc
         push bx
         push cx
 
-        mov dl, ' '        ; space                     ; ПОМЕНЯЙ 20h НА ' ' !!!!!
-        PRINT_DL_VAL_END_COLOR
+        mov dl, ' '             ; space                     
+        PRINT_DL_VAL_AND_COLOR
 
-        mov dl, '='        ; =                          ; ТОЖЕ
-        PRINT_DL_VAL_END_COLOR
+        mov dl, '='             ; =                          
+        PRINT_DL_VAL_AND_COLOR
 
-        mov dl, ' '        ; space                     ; ТОЖЕ
-        PRINT_DL_VAL_END_COLOR
+        mov dl, ' '             ; space                    
+        PRINT_DL_VAL_AND_COLOR
 
         mov ax, ss:[bp]     	; value to turn to hex
         
         mov ch, ah
-        shr ch, 4               ; ch = ax % 16^3
+        shr ch, 4d              ; ch = ax % 16^3
         mov dl, ch
         call NumToOneHex        ; dl = ch 
 
-        shl ch, 4
+        shl ch, 4d
         sub ah, ch              ; ah = ax % 16^2 but less then 16 like 2nd hex num
         mov dl, ah
         call NumToOneHex
 
         mov cl, al
-        shr cl, 4               ; cl = ax % 16 like 3rd hex num
+        shr cl, 4d               ; cl = ax % 16 like 3rd hex num
         mov dl, cl
         call NumToOneHex
 
-        shl cl, 4
+        shl cl, 4d
         sub al, cl              ; al = ax but less then 16 like 4th hex num
         mov dl, al
         call NumToOneHex
 
         pop cx
         pop bx
-        add bp, 2                   ; ПОДПИШИ, 2 ЧЕГО - d ИЛИ h. ПРОСЛЕДИ ЗА ЭТИМ ВЕЗДЕ, ГДЕ ЕСТЬ ЦИФРЫ
+        add bp, 2d               
 
         ret
 ;--------------------------
@@ -210,29 +215,29 @@ RegValueToHex proc
 
 ;--------------------------
 ;Printing one value from stack as hex num (as one hex num)
-;dl - from 0 to 15
-;es:[bx] where to print
-;bx += 2
+;dl - from 0 to 15 (number to print)
+;expect: es:[bx] - where to print
+;return: bx += 2
 ;Destroy: dl, bx += 2
 ;---------------------------
 NumToOneHex proc
-        cmp dl, 9d
+        cmp dl, 9d                                  ; compare it is less or greater then 9
         jg letter_hex_num
 
         add dl, '0'                                 ; if it is 0-9
         jmp print_one_hex_num                       
 
-    letter_hex_num:
-        add dl, 'a' - 10                                 ; 87 = 'a' - 10                     
+    letter_hex_num:                                 ; if it is a - f
+        add dl, 'a' - 10                                               
         
-    print_one_hex_num:                              ; У ТЕБЯ УЖЕ 4 РАЗ ВСТРЕЧАЕТСЯ ТАКИЕ 3 СТРОЧКИ НИЖЕ (3 РАЗА ВСТРЕЧАЛИСЬ В ПРЕДЫДУЩЕЙ ПРОЦЕДУРЕ).
-        PRINT_DL_VAL_END_COLOR
+    print_one_hex_num:                             
+        PRINT_DL_VAL_AND_COLOR                      ; macros to print dl value on screen with reg_back_color
 
         ret
 ;--------------------------
 
 
-; НИХУЯ НЕ ЯСНО, ЧЕ ТАКОЕ ah. ВТОРУЮ СТРОЧКУ КОММЕНТА МОЖНО И УБРАТЬ
+
 ;--------------------------
 ;draw ramka REG_BACK_COLOR color RAMKA_WIDTH width and REGS_COUNT high
 ;Expect:   es = 0b800h
@@ -258,15 +263,15 @@ DrawRectangleRamka proc
         mov ch, 205d    ; прямой символ похожий на '='
         call PrintOneRamkaString    ; printing second string
 
-    ; cycle for middle of ramka
+    ;cycle for middle of ramka
 	draw_all_strings:
         mov dx, 0babah  ; вертикальная окантовка в два полу-регистра сразу
-        mov ch, 0h
+        mov ch, 0h      ; центральный символ пустой
 
         call PrintOneRamkaString
 
         dec si
-        cmp si, 0
+        cmp si, 0       ; проверяем на конец рамки
         jg draw_all_strings 
 
 	;last two strings
@@ -311,6 +316,9 @@ PrintOneRamkaString proc
 ;--------------------------
 ;New timer interrupt function
 ;printing ramka if ramka_flag is 1, or just going to old interrupt
+;destroy: nothing
+;return: nothing
+;expect: nothing
 ;--------------------------
 NewTimerInterrupt proc
 		cmp [ramka_flag], 1
@@ -338,7 +346,7 @@ NewTimerInterrupt proc
 		mov bp, sp
         call PrintRegNameFromMemory ; выводим регистры
 
-		mov [saving_printing_buffer_flag], 2
+		mov [saving_printing_buffer_flag], 2    ; 2 - saving screen to draw_buffer
         call SaveOrPrintBufferFunc
     
         pop ax
@@ -354,7 +362,7 @@ NewTimerInterrupt proc
         pop sp
 
 	jump_old_timer_interrupt:
-		db 0eah
+		db 0eah                                 ; jumping to old timer interrupt
         OldTimerInterruptOffset dw 0
         OldTimerInterruptSegment dw 0
         
@@ -376,7 +384,7 @@ SaveOrPrintBufferFunc proc
 		mov di, SCREEN_WIDTH * (RAMKA_Y_CORD - 2) + RAMKA_X_CORD - 6; begin of ramka coordinate       
 		lea bx, save_buffer    
         lea si, draw_buffer 
-        mov dx, REGS_COUNT + 4  ; ramka height                                                                                     
+        mov dx, REGS_COUNT + 4                                      ; ramka height                                                                                     
 
 save_print_all_ramka:
 		mov cx, RAMKA_WIDTH
@@ -387,7 +395,7 @@ save_print_all_ramka:
         je draw_one_string
 
 	print_one_string:
-    ;printing ramka
+    ;printing ramka - from save_buffer to screen
 		mov ax, cs:[bx]
 		mov es:[di], ax
 		add di, 2
@@ -397,7 +405,7 @@ save_print_all_ramka:
         jmp end_one_string
         
     save_one_string:   
-    ;saving ramka                     
+    ;saving ramka - from screen to save_buffer                    
 		mov ax, es:[di]
 		mov cs:[bx], ax
 		add di, 2
@@ -426,6 +434,7 @@ save_print_all_ramka:
 
 ;--------------------------
 ;Compare draw buffer and screen. If difference, print screen symbol in save & draw buffer
+;Expect: es = 0b800h
 ;Destroy: di ax bx cx dx
 ;Save: nothing
 ;Return: nothing
@@ -441,11 +450,11 @@ compare_string:
 
     compare_symbol:
         mov ax, es:[di]
-        cmp ax, cs:[bx]
+        cmp ax, cs:[bx]         ; comparing screen with draw buffer
         je go_to_next_symbol
 
-        mov cs:[bx], ax
-        mov cs:[si], ax
+        mov cs:[bx], ax         ; if not equal, put symbol from screen to both buffers
+        mov cs:[si], ax         
 
     go_to_next_symbol:
         add di, 2
